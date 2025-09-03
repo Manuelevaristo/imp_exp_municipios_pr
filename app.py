@@ -12,12 +12,17 @@ st.set_page_config(
 # --- FUNÇÃO PARA CARREGAR OS DADOS (com cache para performance) ---
 @st.cache_data
 def carregar_dados():
+    # --- SUBSTITUA PELAS SUAS URLs PÚBLICAS ---
+    url_export = "https://storage.googleapis.com/dados-comex-parana/EXPORTACOES_PARANA.csv"
+    url_import = "hhttps://storage.googleapis.com/dados-comex-parana/IMPORTACOES_PARANA.csv"
+    
     try:
-        df_export = pd.read_csv("EXPORTACOES_PARANA.csv")
-        df_import = pd.read_csv("IMPORTACOES_PARANA.csv")
+        # O Pandas consegue ler diretamente de uma URL pública!
+        df_export = pd.read_csv(url_export)
+        df_import = pd.read_csv(url_import)
         return df_export, df_import
-    except FileNotFoundError:
-        st.error("Erro: Verifique se os arquivos 'EXPORTACOES_PARANA.csv' e 'IMPORTACOES_PARANA.csv' estão na mesma pasta que o script.")
+    except Exception as e:
+        st.error(f"Erro ao carregar os dados via URL pública. Verifique os links e as permissões dos arquivos. Erro: {e}")
         return None, None
 
 # --- CARREGAMENTO DOS DADOS ---
