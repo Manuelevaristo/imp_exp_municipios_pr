@@ -14,7 +14,7 @@ st.set_page_config(
 def carregar_dados():
     # --- SUBSTITUA PELAS SUAS URLs PÚBLICAS ---
     url_export = "https://storage.googleapis.com/dados-comex-parana/EXPORTACOES_PARANA.csv"
-    url_import = "hhttps://storage.googleapis.com/dados-comex-parana/IMPORTACOES_PARANA.csv"
+    url_import = "https://storage.googleapis.com/dados-comex-parana/IMPORTACOES_PARANA.csv"
     
     try:
         # O Pandas consegue ler diretamente de uma URL pública!
