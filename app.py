@@ -54,26 +54,19 @@ def criar_tabela_top10_com_totais(df_filtrado):
     tabela_final = tabela_final[['#', 'Produto', 'Valor (US$)', 'Percentual (%)']]
     return tabela_final
 
-# --- NOVA FUNÇÃO PARA GERAR O ARQUIVO EXCEL EM MEMÓRIA ---
+# --- FUNÇÃO PARA GERAR O ARQUIVO EXCEL EM MEMÓRIA ---
 def gerar_arquivo_excel(df_exp, df_imp, municipio, periodo):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # --- Cria o cabeçalho com as informações de filtro ---
         df_info = pd.DataFrame({
             'Filtro': ['Município', 'Período'],
             'Seleção': [municipio, periodo]
         })
-
-        # --- Planilha de Exportação ---
         df_info.to_excel(writer, sheet_name='Exportações', index=False, startrow=0)
-        df_exp.to_excel(writer, sheet_name='Exportações', index=False, startrow=4) # Deixa 3 linhas de espaço
-
-        # --- Planilha de Importação ---
+        df_exp.to_excel(writer, sheet_name='Exportações', index=False, startrow=4)
         df_info.to_excel(writer, sheet_name='Importações', index=False, startrow=0)
         df_imp.to_excel(writer, sheet_name='Importações', index=False, startrow=4)
-        
     return output.getvalue()
-
 
 # --- CARREGAMENTO DOS DADOS ---
 df_export_original, df_import_original = carregar_dados()
@@ -114,8 +107,7 @@ if ano_selecionado != "Todos os anos" and mes_selecionado != "Todos os meses":
     periodo_str += f" - {mes_selecionado}"
 st.subheader(f"Período: {periodo_str}")
 
-# --- 1. CÁLCULO DO SALDO COMERCIAL (LÓGICA APRIMORADA) ---
-# (Esta seção continua idêntica)
+# --- 1. CÁLCULO DO SALDO COMERCIAL ---
 st.markdown("---")
 st.subheader("Balança Comercial (em US$)")
 if ano_selecionado == "Todos os anos":
@@ -166,50 +158,45 @@ else:
 
 # --- 2. CÁLCULO DOS PRODUTOS MAIS EXPORTADOS E IMPORTADOS ---
 st.markdown("---")
-col1, col2 = st.columns(2)
 
 # Gerando as tabelas para exibição
 tabela_exp = criar_tabela_top10_com_totais(df_export)
 tabela_imp = criar_tabela_top10_com_totais(df_import)
 
-with col1:
-    st.subheader("Principais Produtos Exportados")
-    if not tabela_exp.empty:
-        st.dataframe(tabela_exp.style.format({
-            'Valor (US$)': formatar_brl,
-            'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
-        }), use_container_width=True, hide_index=True)
-    else:
-        st.info("Não há dados de exportação para a seleção atual.")
+# --- ALTERADO: Removido o st.columns para colocar as tabelas em sequência ---
 
-with col2:
-    st.subheader("Principais Produtos Importados")
-    if not tabela_imp.empty:
-        st.dataframe(tabela_imp.style.format({
-            'Valor (US$)': formatar_brl,
-            'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
-        }), use_container_width=True, hide_index=True)
-    else:
-        st.info("Não há dados de importação para a seleção atual.")
+# Tabela de Exportação
+st.subheader("Principais Produtos Exportados")
+if not tabela_exp.empty:
+    st.dataframe(tabela_exp.style.format({
+        'Valor (US$)': formatar_brl,
+        'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
+    }), use_container_width=True, hide_index=True)
+else:
+    st.info("Não há dados de exportação para a seleção atual.")
+
+# Tabela de Importação
+st.subheader("Principais Produtos Importados")
+if not tabela_imp.empty:
+    st.dataframe(tabela_imp.style.format({
+        'Valor (US$)': formatar_brl,
+        'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
+    }), use_container_width=True, hide_index=True)
+else:
+    st.info("Não há dados de importação para a seleção atual.")
         
-# --- NOVO: SEÇÃO DE DOWNLOAD ---
+# --- SEÇÃO DE DOWNLOAD ---
 st.markdown("---")
 st.subheader("📥 Download do Relatório")
 
-# Verifica se há dados para baixar antes de mostrar o botão
 if not tabela_exp.empty or not tabela_imp.empty:
-    # Gera o arquivo Excel em memória
     excel_bytes = gerar_arquivo_excel(
         df_exp=tabela_exp,
         df_imp=tabela_imp,
         municipio=municipio_selecionado,
         periodo=periodo_str
     )
-
-    # Cria um nome de arquivo dinâmico
     nome_arquivo = f"Relatorio_Comex_{municipio_selecionado.replace(' ', '_')}_{periodo_str}.xlsx"
-
-    # Cria o botão de download
     st.download_button(
         label="Clique aqui para baixar o relatório em Excel",
         data=excel_bytes,
