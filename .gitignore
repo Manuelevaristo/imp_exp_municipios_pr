@@ -1,2 +1,8 @@
 /venv
 .streamlit
+/data
+.ipynb
+*.ipynb
+/
+*app1.py
+*app4.py

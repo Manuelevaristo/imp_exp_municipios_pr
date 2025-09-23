@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go # Importando a biblioteca Plotly
+import plotly.graph_objects as go
+from io import BytesIO  # Necessário para manipulação de arquivos em memória
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -9,145 +10,211 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- FUNÇÃO PARA CARREGAR OS DADOS (com cache para performance) ---
+# --- MAPA DE MESES PARA MELHOR VISUALIZAÇÃO ---
+meses_map = {
+    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho",
+    7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
+}
+meses_map_rev = {v: k for k, v in meses_map.items()}
+
+# --- FUNÇÃO DE FORMATAÇÃO PARA O PADRÃO BRASILEIRO ---
+def formatar_brl(valor):
+    if pd.isna(valor): return "N/A"
+    return f"{valor:,.2f}".replace(",", "TEMP").replace(".", ",").replace("TEMP", ".")
+
+# --- FUNÇÃO PARA CARREGAR OS DADOS ---
 @st.cache_data
 def carregar_dados():
-    # --- SUBSTITUA PELAS SUAS URLs PÚBLICAS ---
-    url_export = "https://storage.googleapis.com/dados-comex-parana/EXPORTACOES_PARANA.csv"
-    url_import = "https://storage.googleapis.com/dados-comex-parana/IMPORTACOES_PARANA.csv"
-    
+    arquivo_export = "EXPORTACOES_CONSOLIDADAS_PR.csv"
+    arquivo_import = "IMPORTACOES_CONSOLIDADAS_PR.csv"
     try:
-        # O Pandas consegue ler diretamente de uma URL pública!
-        df_export = pd.read_csv(url_export)
-        df_import = pd.read_csv(url_import)
+        df_export = pd.read_csv(arquivo_export)
+        df_import = pd.read_csv(arquivo_import)
+        df_export['VL_FOB'] = pd.to_numeric(df_export['VL_FOB'], errors='coerce').fillna(0)
+        df_import['VL_FOB'] = pd.to_numeric(df_import['VL_FOB'], errors='coerce').fillna(0)
         return df_export, df_import
-    except Exception as e:
-        st.error(f"Erro ao carregar os dados via URL pública. Verifique os links e as permissões dos arquivos. Erro: {e}")
+    except FileNotFoundError:
+        st.error(f"Erro: Arquivos não encontrados!")
         return None, None
 
-# --- CARREGAMENTO DOS DADOS ---
-df_export, df_import = carregar_dados()
+# --- FUNÇÃO PARA CRIAR AS TABELAS DE RANKING ---
+def criar_tabela_top10_com_totais(df_filtrado):
+    if df_filtrado.empty:
+        return pd.DataFrame()
+    total_geral = df_filtrado['VL_FOB'].sum()
+    produtos_agrupados = df_filtrado.groupby('NO_SH4_POR')['VL_FOB'].sum().sort_values(ascending=False).reset_index()
+    produtos_agrupados.rename(columns={'VL_FOB': 'Valor (US$)', 'NO_SH4_POR': 'Produto'}, inplace=True)
+    top_10 = produtos_agrupados.head(10).copy()
+    soma_demais = produtos_agrupados.iloc[10:]['Valor (US$)'].sum()
+    linha_demais = pd.DataFrame([{'Produto': 'Demais Produtos', 'Valor (US$)': soma_demais}])
+    linha_total = pd.DataFrame([{'Produto': 'TOTAL', 'Valor (US$)': total_geral}])
+    tabela_final = pd.concat([top_10, linha_demais, linha_total], ignore_index=True)
+    tabela_final['Percentual (%)'] = (tabela_final['Valor (US$)'] / total_geral) * 100 if total_geral > 0 else 0
+    tabela_final['#'] = [str(i+1) for i in range(len(top_10))] + ['', '']
+    tabela_final = tabela_final[['#', 'Produto', 'Valor (US$)', 'Percentual (%)']]
+    return tabela_final
 
-if df_export is None or df_import is None:
+# --- NOVA FUNÇÃO PARA GERAR O ARQUIVO EXCEL EM MEMÓRIA ---
+def gerar_arquivo_excel(df_exp, df_imp, municipio, periodo):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # --- Cria o cabeçalho com as informações de filtro ---
+        df_info = pd.DataFrame({
+            'Filtro': ['Município', 'Período'],
+            'Seleção': [municipio, periodo]
+        })
+
+        # --- Planilha de Exportação ---
+        df_info.to_excel(writer, sheet_name='Exportações', index=False, startrow=0)
+        df_exp.to_excel(writer, sheet_name='Exportações', index=False, startrow=4) # Deixa 3 linhas de espaço
+
+        # --- Planilha de Importação ---
+        df_info.to_excel(writer, sheet_name='Importações', index=False, startrow=0)
+        df_imp.to_excel(writer, sheet_name='Importações', index=False, startrow=4)
+        
+    return output.getvalue()
+
+
+# --- CARREGAMENTO DOS DADOS ---
+df_export_original, df_import_original = carregar_dados()
+if df_export_original is None or df_import_original is None:
     st.stop()
 
 # --- TÍTULO DA APLICAÇÃO ---
 st.title('📊 Análise de Comércio Exterior dos Municípios Paranaenses')
-st.markdown("Utilize o filtro na barra lateral para selecionar um município e visualizar seus dados de exportação e importação.")
+st.markdown("Utilize os filtros na barra lateral para detalhar sua análise.")
 
 # --- BARRA LATERAL (SIDEBAR) COM FILTROS ---
 st.sidebar.header("Filtros")
+lista_municipios = sorted(df_export_original['NOME_MUN'].unique())
+municipio_selecionado = st.sidebar.selectbox('Selecione o Município', options=lista_municipios)
+anos_disponiveis = sorted(pd.concat([df_export_original['CO_ANO'], df_import_original['CO_ANO']]).unique())
+opcoes_ano = ["Todos os anos"] + anos_disponiveis
+ano_selecionado = st.sidebar.selectbox('Selecione o Ano', options=opcoes_ano)
+mes_selecionado = "Todos os meses"
+if ano_selecionado != "Todos os anos":
+    opcoes_mes = ["Todos os meses"] + list(meses_map.values())
+    mes_selecionado = st.sidebar.selectbox('Selecione o Mês', options=opcoes_mes)
 
-lista_municipios = sorted(df_export['NOME_MUN'].unique())
-municipio_selecionado = st.sidebar.selectbox(
-    'Selecione o Município',
-    options=lista_municipios
-)
-
-# --- FILTRANDO OS DADOS PELO MUNICÍPIO SELECIONADO ---
-exp_mun = df_export[df_export['NOME_MUN'] == municipio_selecionado]
-imp_mun = df_import[df_import['NOME_MUN'] == municipio_selecionado]
+# --- LÓGICA DE FILTRAGEM DOS DADOS ---
+df_export = df_export_original[df_export_original['NOME_MUN'] == municipio_selecionado]
+df_import = df_import_original[df_import_original['NOME_MUN'] == municipio_selecionado]
+if ano_selecionado != "Todos os anos":
+    df_export = df_export[df_export['CO_ANO'] == ano_selecionado]
+    df_import = df_import[df_import['CO_ANO'] == ano_selecionado]
+    if mes_selecionado != "Todos os meses":
+        mes_numero = meses_map_rev[mes_selecionado]
+        df_export = df_export[df_export['CO_MES'] == mes_numero]
+        df_import = df_import[df_import['CO_MES'] == mes_numero]
 
 # --- PAINEL PRINCIPAL ---
-st.header(f"Análise para o Município de: **{municipio_selecionado}**")
+st.header(f"Análise para: **{municipio_selecionado}**")
+periodo_str = f"{ano_selecionado}"
+if ano_selecionado != "Todos os anos" and mes_selecionado != "Todos os meses":
+    periodo_str += f" - {mes_selecionado}"
+st.subheader(f"Período: {periodo_str}")
 
-# --- 1. CÁLCULO DO SALDO COMERCIAL POR ANO ---
-st.subheader("Balança Comercial Anual (em US$)")
-
-if not exp_mun.empty or not imp_mun.empty:
-    exp_anual = exp_mun.groupby('CO_ANO')['VL_FOB'].sum().reset_index().rename(columns={'VL_FOB': 'Total Exportado'})
-    imp_anual = imp_mun.groupby('CO_ANO')['VL_FOB'].sum().reset_index().rename(columns={'VL_FOB': 'Total Importado'})
-
-    balanca_anual = pd.merge(exp_anual, imp_anual, on='CO_ANO', how='outer').fillna(0)
-    balanca_anual['Saldo Comercial'] = balanca_anual['Total Exportado'] - balanca_anual['Total Importado']
-    balanca_anual = balanca_anual.sort_values(by='CO_ANO').set_index('CO_ANO')
-
-    # --- GRÁFICOS MELHORADOS COM PLOTLY ---
-    
-    # Gráfico 1: Combinado de Barras (Exportação/Importação) e Linha (Saldo)
-    fig_combo = go.Figure()
-
-    # Adiciona barra de Exportação
-    fig_combo.add_trace(go.Bar(
-        x=balanca_anual.index,
-        y=balanca_anual['Total Exportado'],
-        name='Exportações',
-        marker_color='#0068C9' # Azul
-    ))
-    # Adiciona barra de Importação
-    fig_combo.add_trace(go.Bar(
-        x=balanca_anual.index,
-        y=balanca_anual['Total Importado'],
-        name='Importações',
-        marker_color='#FF8700' # Laranja
-    ))
-    # Adiciona linha do Saldo Comercial
-    fig_combo.add_trace(go.Scatter(
-        x=balanca_anual.index,
-        y=balanca_anual['Saldo Comercial'],
-        name='Saldo Comercial',
-        mode='lines+markers',
-        line=dict(color='gray', width=3, dash='dot')
-    ))
-    fig_combo.update_layout(
-        title='Exportações, Importações e Saldo Comercial por Ano',
-        xaxis_title='Ano',
-        yaxis_title='Valor (US$)',
-        barmode='group',
-        legend_title_text='Legenda'
-    )
-    st.plotly_chart(fig_combo, use_container_width=True)
-
-
-    # Gráfico 2: Focado no Saldo Comercial com cores para superávit/déficit
-    st.markdown("---") # Adiciona uma linha divisória
-    
-    cores = ['#29AB87' if saldo >= 0 else '#E15759' for saldo in balanca_anual['Saldo Comercial']] # Verde ou Vermelho
-    fig_saldo = go.Figure()
-    fig_saldo.add_trace(go.Bar(
-        x=balanca_anual.index,
-        y=balanca_anual['Saldo Comercial'],
-        name='Saldo',
-        marker_color=cores
-    ))
-    fig_saldo.update_layout(
-        title='Resultado da Balança Comercial por Ano (Superávit/Déficit)',
-        xaxis_title='Ano',
-        yaxis_title='Saldo (US$)'
-    )
-    st.plotly_chart(fig_saldo, use_container_width=True)
-
-
-    # Exibindo a tabela com os valores formatados
-    st.markdown("### Tabela de Dados da Balança Comercial")
-    st.dataframe(balanca_anual.style.format({
-        'Total Exportado': 'US$ {:,.2f}',
-        'Total Importado': 'US$ {:,.2f}',
-        'Saldo Comercial': 'US$ {:,.2f}'
-    }))
-
+# --- 1. CÁLCULO DO SALDO COMERCIAL (LÓGICA APRIMORADA) ---
+# (Esta seção continua idêntica)
+st.markdown("---")
+st.subheader("Balança Comercial (em US$)")
+if ano_selecionado == "Todos os anos":
+    if not df_export.empty or not df_import.empty:
+        exp_anual = df_export.groupby('CO_ANO')['VL_FOB'].sum()
+        imp_anual = df_import.groupby('CO_ANO')['VL_FOB'].sum()
+        balanca = pd.concat([exp_anual, imp_anual], axis=1).fillna(0)
+        balanca.columns = ['Total Exportado', 'Total Importado']
+        balanca['Saldo Comercial'] = balanca['Total Exportado'] - balanca['Total Importado']
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=balanca.index, y=balanca['Total Exportado'], name='Exportações'))
+        fig.add_trace(go.Bar(x=balanca.index, y=balanca['Total Importado'], name='Importações'))
+        fig.add_trace(go.Scatter(x=balanca.index, y=balanca['Saldo Comercial'], name='Saldo', mode='lines+markers'))
+        fig.update_layout(title='Evolução Anual da Balança Comercial', barmode='group')
+        st.plotly_chart(fig, use_container_width=True)
+elif ano_selecionado != "Todos os anos" and mes_selecionado == "Todos os meses":
+    if not df_export.empty or not df_import.empty:
+        st.markdown(f"#### Resumo Consolidado de {ano_selecionado}")
+        total_exportado_ano = df_export['VL_FOB'].sum()
+        total_importado_ano = df_import['VL_FOB'].sum()
+        saldo_comercial_ano = total_exportado_ano - total_importado_ano
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Exportado no Ano", f"US$ {formatar_brl(total_exportado_ano)}")
+        col2.metric("Total Importado no Ano", f"US$ {formatar_brl(total_importado_ano)}")
+        col3.metric("Saldo Comercial no Ano", f"US$ {formatar_brl(saldo_comercial_ano)}")
+        st.markdown("---")
+        exp_mensal = df_export.groupby('CO_MES')['VL_FOB'].sum()
+        imp_mensal = df_import.groupby('CO_MES')['VL_FOB'].sum()
+        balanca = pd.concat([exp_mensal, imp_mensal], axis=1).fillna(0)
+        balanca.columns = ['Total Exportado', 'Total Importado']
+        balanca = balanca.reindex(range(1, 13), fill_value=0)
+        balanca['Saldo Comercial'] = balanca['Total Exportado'] - balanca['Total Importado']
+        balanca.index = balanca.index.map(meses_map)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=balanca.index, y=balanca['Total Exportado'], name='Exportações'))
+        fig.add_trace(go.Bar(x=balanca.index, y=balanca['Total Importado'], name='Importações'))
+        fig.add_trace(go.Scatter(x=balanca.index, y=balanca['Saldo Comercial'], name='Saldo', mode='lines+markers'))
+        fig.update_layout(title=f'Evolução Mensal da Balança Comercial em {ano_selecionado}', barmode='group')
+        st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning(f"Não foram encontrados registros de comércio exterior para {municipio_selecionado}.")
+    total_exportado = df_export['VL_FOB'].sum()
+    total_importado = df_import['VL_FOB'].sum()
+    saldo_comercial = total_exportado - total_importado
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Exportado no Mês", f"US$ {formatar_brl(total_exportado)}")
+    col2.metric("Total Importado no Mês", f"US$ {formatar_brl(total_importado)}")
+    col3.metric("Saldo Comercial no Mês", f"US$ {formatar_brl(saldo_comercial)}")
 
-# O restante do código para Top 10 produtos continua o mesmo
+# --- 2. CÁLCULO DOS PRODUTOS MAIS EXPORTADOS E IMPORTADOS ---
+st.markdown("---")
 col1, col2 = st.columns(2)
 
+# Gerando as tabelas para exibição
+tabela_exp = criar_tabela_top10_com_totais(df_export)
+tabela_imp = criar_tabela_top10_com_totais(df_import)
+
 with col1:
-    st.subheader("Top 10 Produtos Mais Exportados")
-    if not exp_mun.empty:
-        top_10_exp = exp_mun.groupby('NO_SH4_POR')['VL_FOB'].sum().nlargest(10).reset_index()
-        top_10_exp.rename(columns={'VL_FOB': 'Valor (US$)', 'NO_SH4_POR': 'Produto'}, inplace=True)
-        top_10_exp.index = top_10_exp.index + 1
-        st.dataframe(top_10_exp.style.format({'Valor (US$)': '{:,.2f}'}))
+    st.subheader("Principais Produtos Exportados")
+    if not tabela_exp.empty:
+        st.dataframe(tabela_exp.style.format({
+            'Valor (US$)': formatar_brl,
+            'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
+        }), use_container_width=True, hide_index=True)
     else:
-        st.info("Não há dados de exportação para este município.")
+        st.info("Não há dados de exportação para a seleção atual.")
 
 with col2:
-    st.subheader("Top 10 Produtos Mais Importados")
-    if not imp_mun.empty:
-        top_10_imp = imp_mun.groupby('NO_SH4_POR')['VL_FOB'].sum().nlargest(10).reset_index()
-        top_10_imp.rename(columns={'VL_FOB': 'Valor (US$)', 'NO_SH4_POR': 'Produto'}, inplace=True)
-        top_10_imp.index = top_10_imp.index + 1
-        st.dataframe(top_10_imp.style.format({'Valor (US$)': '{:,.2f}'}))
+    st.subheader("Principais Produtos Importados")
+    if not tabela_imp.empty:
+        st.dataframe(tabela_imp.style.format({
+            'Valor (US$)': formatar_brl,
+            'Percentual (%)': lambda x: f"{formatar_brl(x)}%"
+        }), use_container_width=True, hide_index=True)
     else:
-        st.info("Não há dados de importação para este município.")
+        st.info("Não há dados de importação para a seleção atual.")
+        
+# --- NOVO: SEÇÃO DE DOWNLOAD ---
+st.markdown("---")
+st.subheader("📥 Download do Relatório")
+
+# Verifica se há dados para baixar antes de mostrar o botão
+if not tabela_exp.empty or not tabela_imp.empty:
+    # Gera o arquivo Excel em memória
+    excel_bytes = gerar_arquivo_excel(
+        df_exp=tabela_exp,
+        df_imp=tabela_imp,
+        municipio=municipio_selecionado,
+        periodo=periodo_str
+    )
+
+    # Cria um nome de arquivo dinâmico
+    nome_arquivo = f"Relatorio_Comex_{municipio_selecionado.replace(' ', '_')}_{periodo_str}.xlsx"
+
+    # Cria o botão de download
+    st.download_button(
+        label="Clique aqui para baixar o relatório em Excel",
+        data=excel_bytes,
+        file_name=nome_arquivo,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+else:
+    st.warning("Não há dados para gerar o relatório com os filtros atuais.")
